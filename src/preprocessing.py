@@ -214,9 +214,9 @@ if __name__ == "__main__":
     parser.add_argument("--seq", action="store_true")
     args = parser.parse_args()
     if args.seq:
-        preprocessing = PreprocessingSeq(args.src_paths, args.dst_paths, args.create_manifest_at)
+        preprocessor = PreprocessingSeq(args.src_paths, args.dst_paths, args.create_manifest_at)
     else:
-        preprocessing = PreprocessingTree(args.src_paths, args.dst_paths, args.create_manifest_at, args.simple)
-    preprocessing.load()
-    preprocessing.process()
-    preprocessing.dump()
+        preprocessor = PreprocessingTree(args.src_paths, args.dst_paths, args.create_manifest_at, args.simple)
+    preprocessor.load()
+    preprocessor.process()
+    preprocessor.dump()

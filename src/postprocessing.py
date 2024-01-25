@@ -207,26 +207,30 @@ class PostprocessingTree(Postprocessing):
                 except Exception as e:
                     self._gen_list[i][k] = ""
                     continue
-                is_root = False
-                result_list = []
-                if not self.is_simple:
-                    args = deque()
-                    # 循环处理树直到所有叶子节点都被移除
-                    while not is_root:
-                        leaf_value, is_arg, is_root = self._remove_leftmost_leaf(root)
-                        if leaf_value is not None:
-                            if not is_arg:
-                                result_list.append(leaf_value.strip())
-                                while len(args) != 0:
-                                    result_list.extend([x.strip() for x in args])
-                                    args.clear()
-                            else:
-                                args.append(leaf_value)
-                else:
-                    while not is_root:
-                        content, is_root = self._remove_leftmost_leaf_simple(root)
-                        result_list.extend([x.strip() for x in content])
+                result_list = self._parse_tree(root)
                 self._gen_list[i][k] = self._convert_to_raw_label(result_list)
+
+    def _parse_tree(self, root: ET.Element):
+        is_root = False
+        result_list = []
+        if not self.is_simple:
+            args = deque()
+                    # 循环处理树直到所有叶子节点都被移除
+            while not is_root:
+                leaf_value, is_arg, is_root = self._remove_leftmost_leaf(root)
+                if leaf_value is not None:
+                    if not is_arg:
+                        result_list.append(leaf_value.strip())
+                        while len(args) != 0:
+                            result_list.extend([x.strip() for x in args])
+                            args.clear()
+                    else:
+                        args.append(leaf_value)
+        else:
+            while not is_root:
+                content, is_root = self._remove_leftmost_leaf_simple(root)
+                result_list.extend([x.strip() for x in content])
+        return result_list
     
 if __name__ == "__main__":
     import argparse

@@ -63,6 +63,21 @@ When was the instance of National Football League Draft whose English language w
 Output:
 <QueryAttr><FilterConcept><QFilterStr><FilterStr><FindAll></FindAll><args><arg>official website</arg><arg>http://www.nfl.com/draft/history/fulldraft?season=2007</arg></args></FilterStr><args><arg>language of work or name</arg><arg>English</arg></args></QFilterStr><args><arg>National Football League Draft</arg></args></FilterConcept><args><arg>point in time</arg></args></QueryAttr>
 """
+# INST_TEMPLATE_TREE_COMPLEX = """
+# Please convert the query into an XML-like tree of functions. The functions and the XML-like tree structure can be executed in a specifically designed engine to find the answer to a query.
+
+# Example 1:
+# Input:
+# Is http://www.cheechandchong.com Eve Myles's official website?
+# Output:
+# <VerifyStr><QueryAttr><Find><args><arg>Eve Myles</arg></args></Find><args><arg>official website</arg></args></QueryAttr><args><arg>http://www.cheechandchong.com</arg></args></VerifyStr>
+
+# Example 2:
+# Input:
+# How many neighborhoods have a population not 500000000?
+# Output:
+# <Count><FilterConcept><FilterNum><FindAll></FindAll><args><arg>population</arg><arg>500000000</arg><arg>!=</arg></args></FilterNum><args><arg>neighborhood</arg></args></FilterConcept></Count>
+# """
 
 ARG_TOKENS = ["<args>", "</args>", "<arg>", "</arg>"]
 FUNCTION_LIST = [

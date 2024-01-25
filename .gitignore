@@ -163,4 +163,7 @@ cython_debug/
 user.config
 data/proc
 *.txt
+test.json
 generated_predictions*
+.vscode
+*.ipynb
