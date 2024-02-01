@@ -1,6 +1,7 @@
 import os
 import json
 import argparse
+import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional
 
 class Preprocessing:
@@ -199,8 +200,10 @@ class PreprocessingTree(Preprocessing):
                         tree = _get_program_tree(program, root_index)
                     else:
                         tree = _get_program_tree(program, root_index)
+                    _ = ET.fromstring(tree)
                 except Exception as e:
                     print(f"exception when parsing {i}: {e}")
+                    tree = None
                 if tree is not None:
                     self._dst_dict[p_dst].append({"id": i, "question": question, "program": tree})
         assert self._check_len(), "length of src and dst not equal"

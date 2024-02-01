@@ -167,3 +167,4 @@ test.json
 generated_predictions*
 .vscode
 *.ipynb
+*.deprecated
