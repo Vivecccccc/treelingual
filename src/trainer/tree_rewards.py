@@ -122,11 +122,10 @@ class PostProcessingTreeForRewards(PostprocessingTree):
     
     @classmethod
     def comparing_ans(cls, gt, pred):
-        raise NotImplementedError
-        def _equal(gt, pred):
+        def _equal(gt, pred) -> float:
             assert gt is not None, "ground truth should not be None"
             if not pred:
-                return False
+                return 0.0
             if isinstance(gt, list):
                 if isinstance(pred, list):
                     if pred[0] == gt[0]:
@@ -293,7 +292,6 @@ class TreeRewards:
                         gt_xml: ET.Element,
                         pred_xml: ET.Element,
                         processor: PostProcessingTreeForRewards) -> float:
-        raise NotImplementedError
         gt_seq = processor._convert_to_raw_label(processor._parse_tree(gt_xml))
         pred_seq = processor._convert_to_raw_label(processor._parse_tree(pred_xml))
         gt_ans = processor._infer(processor.prepare_args_for_infer(gt_seq))
@@ -303,23 +301,24 @@ class TreeRewards:
     def batch_award(self,
                     label_tensors: List[torch.Tensor],
                     response_tensors: List[torch.Tensor]
-                    ) -> Tuple[List[float], List[torch.Tensor], List[torch.Tensor]]:
+                    ) -> Tuple[List[float], List[int]]:
         assert len(label_tensors) == len(response_tensors)
         labels, responses = _decode_label_and_resp(label_tensors, response_tensors, self.tokenizer)
         rewards = []
-        label_ids_list = [x for x in label_tensors]
-        pred_ids_list = [x for x in response_tensors]
+        removed_indices = []
         for i, (label, _) in enumerate(zip(labels, responses)):
             reward: List[Tuple[str, float]] = []
             _, gt_xml = _all_is_well(label)
+            _, pred_xml = _all_is_well(responses[i])
             try:
                 reward_format, remains = TreeRewards.award_format(response_tensors[i], self.tokenizer)
                 reward_distance = TreeRewards.award_distance(gt_xml, remains, self.tokenizer)
                 reward.extend(reward_format)
                 reward.extend(reward_distance)
+                reward_induction = TreeRewards.award_induction(gt_xml, pred_xml, self.pp)
+                reward = reward + reward_induction
                 rewards.append(reward)
             except:
                 # remove this item from the batch
-                label_ids_list.pop(i)
-                pred_ids_list.pop(i)
-        return rewards, label_ids_list, pred_ids_list
+                removed_indices.append(i)
+        return rewards, removed_indices

@@ -1,7 +1,10 @@
 import math
-from typing import Callable, List
+import inspect
+import time
+from typing import Callable, Dict, List, Optional, Tuple
 from tqdm import tqdm
 
+import torch
 from trl import PPOTrainer, AutoModelForCausalLMWithValueHead
 from transformers import TrainerCallback, Seq2SeqTrainingArguments, GenerationConfig, TrainerState, TrainerControl
 
@@ -10,6 +13,9 @@ from llmtuner.hparams import ModelArguments, FinetuningArguments, GeneratingArgu
 from llmtuner.extras.callbacks import LogCallback, FixValueHeadModelCallback
 from llmtuner.extras.logging import get_logger
 from llmtuner.extras.misc import AverageMeter, count_parameters, get_logits_processor
+from llmtuner.train.ppo.utils import dump_layernorm, restore_layernorm
+
+from trainer.tree_rewards import TreeRewards
 
 logger = get_logger(__name__)
 
@@ -21,7 +27,7 @@ class TreePPOTrainer(CustomPPOTrainer, PPOTrainer):
         finetuning_args: "FinetuningArguments",
         generating_args: "GeneratingArguments",
         callbacks: List["TrainerCallback"],
-        reward_function: Callable,
+        kb_file_path: str,
         **kwargs,
     ):
         PPOTrainer.__init__(self, **kwargs)
@@ -33,12 +39,24 @@ class TreePPOTrainer(CustomPPOTrainer, PPOTrainer):
             eos_token_id=[self.tokenizer.eos_token_id],
             **generating_args.to_dict()
         )
-        self.reward_function = reward_function
+        tree_rewards = TreeRewards(self.tokenizer, kb_file_path)
+        self.reward_function = tree_rewards.batch_award
 
         self.state = TrainerState()
         self.control = TrainerControl()
         self.log_callback, self.save_callback = callbacks[0], callbacks[1]
         assert isinstance(self.log_callback, LogCallback) and isinstance(self.save_callback, FixValueHeadModelCallback)
+        if self.args.max_steps > 0:
+            logger.info("max_steps is given, it will override any value given in num_train_epochs")
+
+    def _set_signature_columns_if_needed(self):
+        if self._signature_columns is None:
+            # Inspect model forward signature to keep only the arguments it accepts.
+            signature = inspect.signature(self.model.forward)
+            self._signature_columns = list(signature.parameters.keys())
+            # label => sentiment | we need query and response for logging purpose
+            self._signature_columns += ["label", "query", "response"]
+            self._signature_columns += ["labels"]
 
     def ppo_train(self) -> None:
         total_train_batch_size = (
@@ -89,5 +107,102 @@ class TreePPOTrainer(CustomPPOTrainer, PPOTrainer):
             self.model.eval()
 
             self.tokenizer.padding_side = "right"
-            queries, responses, rewards = [], [], []
+            queries, responses, rewards_per_token = [], [], []
             
+            for idx in range(0, self.config.batch_size, self.config.mini_batch_size):
+                mini_batch_queries, mini_batch_responses, mini_batch_labels = self.get_inputs(batch[idx:idx+self.config.mini_batch_size])
+                mini_batch_rewards = self.get_rewards(mini_batch_queries, mini_batch_labels, mini_batch_responses)
+                queries.extend(mini_batch_queries)
+                responses.extend(mini_batch_responses)
+                rewards_per_token.extend(mini_batch_rewards)
+
+            unwrapped_model.gradient_checkpointing_enable()
+            unwrapped_model.config.use_cache = False
+            self.model.train()
+
+            stats = self.step(queries, responses, rewards_per_token)
+
+    @torch.no_grad()
+    def get_inputs(self, batch: Dict[str, torch.Tensor]) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        r"""
+        Generates model's responses given queries.
+        """
+        if self.model_args.upcast_layernorm:
+            layernorm_params = dump_layernorm(self.model)
+
+        if batch["input_ids"].size(0) == 1: # handle llama2 ppo with gradient accumulation > 1
+            start_index = (batch["input_ids"][0] != self.tokenizer.pad_token_id).nonzero()[0].item()
+            for k, v in batch.items():
+                batch[k] = v[:, start_index:]
+
+        unwrapped_model: "AutoModelForCausalLMWithValueHead" = self.accelerator.unwrap_model(self.model)
+        generate_output: torch.Tensor = unwrapped_model.generate(
+            generation_config=self.generation_config,
+            logits_processor=get_logits_processor(),
+            **batch
+        )
+
+        if self.model_args.upcast_layernorm:
+            restore_layernorm(self.model, layernorm_params)
+
+        query = batch["input_ids"].detach().cpu()
+        response = generate_output[:, batch["input_ids"].size(-1):].detach().cpu()
+        label = batch["labels"].detach().cpu()
+        queries, responses, labels = [], [], []
+        for i in range(len(query)):
+            query_start_index = (query[i] != self.tokenizer.pad_token_id).nonzero()[0].item()
+            response_index = (response[i] != self.tokenizer.pad_token_id).nonzero()
+            label_index = (label[i] != self.tokenizer.pad_token_id).nonzero()
+
+            if len(response_index) == 0:
+                response_length = 1 # allow empty response
+            else:
+                response_length = response_index[-1].item() + 1
+            label_length = label_index[-1].item() + 1
+
+            queries.append(query[i, query_start_index:]) # remove padding from left
+            responses.append(response[i, :response_length]) # remove padding from right
+            labels.append(label[i, :label_length]) # remove padding from right
+        return queries, responses, labels
+    
+    def get_rewards(
+            self,
+            queries: List[torch.Tensor],
+            labels: List[torch.Tensor],
+            responses: List[torch.Tensor],
+    ) -> List[torch.Tensor]:
+        rewards, invalid_ids = self.reward_function(labels, responses)
+        for i in invalid_ids:
+            queries.pop(i)
+            labels.pop(i)
+            responses.pop(i)
+        return rewards
+
+    def step(
+            self,
+            queries: List[torch.LongTensor],
+            responses: List[torch.LongTensor],
+            rewards_per_token: List[torch.LongTensor],
+            response_masks: Optional[List[torch.LongTensor]] = None
+    ):
+        bs = len(queries)
+
+        queries, responses, scores, response_masks = self._step_safety_checker(
+            bs, queries, responses, scores, response_masks
+        ) # this method would squeeze scores if dim() == 1, but in our case it won't matter
+        scores = torch.tensor(scores, device=self.current_device)
+        if self.config.use_score_scaling or self.config.score_clip is not None:
+            raise NotImplementedError("Score scaling and clipping are not yet implemented")
+        
+        timing = dict()
+        t0 = time.time()
+
+        t = time.time()
+
+        model_inputs = self.prepare_model_inputs(queries, responses)
+
+        if self.is_distributed:
+            raise NotImplementedError("Distributed training is not yet implemented")
+        
+        
+        
